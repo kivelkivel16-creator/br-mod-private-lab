@@ -1,46 +1,42 @@
-// BR MOD v6.8 local physics controls for selected player/current vehicle only.
-// No frame/network hooks and no anticheat bypass.
+// BR MOD Physics v8.1 — Full Integration (Base v6.8 + New Features)
 (function () {
-    if (globalThis.__brPhysicsV68) return;
+    if (globalThis.__brPhysicsV81) return;
     var base = globalThis.__brCoreV4;
     if (base === undefined) return;
     var root = "/sdcard/Android/data/com.br.top/files/";
     var cfgPath = root + "br_cfg.txt";
     var logPath = root + "br_log.txt";
+    var statusPath = root + "br_status.txt";
+
+    // Resource Offsets (If they change after a game update, use scan_offsets=1 to find new ones)
+    var OFFSET_STAMINA = 0x1A0;
+    var OFFSET_VEHICLE_FUEL = 0x200;
+    var OFFSET_VEHICLE_HEALTH = 0x204;
+    var OFFSET_PLAYER_HEALTH = 0x1A4;
+
     var rt = {
-        speed: 1.0,
-        jump: 1.0,
-        safeFall: false,
-        endlessRun: false,
-        fly: false,
-        waterWalk: false,
-        waterDrive: false,
-        vehicleCruise: false,
-        actionSeq: null,
-        brakeUntil: 0,
-        landingUntil: 0,
-        flightKey: null,
-        flightOrigin: null,
-        flightLimitLogged: false,
-        target: null,
-        touchAttached: false,
+        speed: 1.0, jump: 1.0, safeFall: false, endlessRun: false,
+        fly: false, waterWalk: false, waterDrive: false, vehicleCruise: false,
+        actionSeq: null, brakeUntil: 0, landingUntil: 0,
+        flightKey: null, flightOrigin: null, flightLimitLogged: false,
+        target: null, touchAttached: false,
         active: [false, false, false],
         coords: [{x: 0, y: 0}, {x: 0, y: 0}, {x: 0, y: 0}],
-        touchLogs: 0,
-        jumpArmed: true,
-        cameraLogged: false,
-        cameraWarned: false,
-        writesVehicle: 0,
-        writesPlayer: 0,
-        writesVertical: 0,
-        errors: 0
+        touchLogs: 0, jumpArmed: true,
+        cameraLogged: false, cameraWarned: false,
+        writesVehicle: 0, writesPlayer: 0, writesVertical: 0, errors: 0,
+        // New Features State
+        godMode: false, infiniteFuel: false, infiniteStamina: false,
+        preventFallDmg: false, radarActive: false, scanOffsets: false,
+        blinkTarget: null, autoJackTarget: null,
+        zUp: false, zDown: false
     };
-    globalThis.__brPhysicsV68 = rt;
+    globalThis.__brPhysicsV81 = rt;
 
     function log(message) {
         try {
             var f = new File(logPath, "a");
-            f.write("[physics-v6.8] " + message + "\n");
+            f.write("[physics-v8.1] " + message + "\n");
             f.flush();
             f.close();
         } catch (_) {}
@@ -59,7 +55,7 @@
     function readConfig() {
         try {
             var f = new File(cfgPath, "r");
-            var text = f.readText(4096) || "";
+            var text = f.readText(8192) || "";
             f.close();
             var oldSpeed = rt.speed;
             var oldFly = rt.fly;
@@ -71,12 +67,33 @@
             rt.waterWalk = cfgValue(text, "waterwalk", "0") === "1";
             rt.waterDrive = cfgValue(text, "waterdrive", "0") === "1";
             rt.vehicleCruise = cfgValue(text, "vehiclecruise", "0") === "1";
+            
+            // New Features Config
+            rt.godMode = cfgValue(text, "godmode", "0") === "1";
+            rt.infiniteFuel = cfgValue(text, "infinitefuel", "0") === "1";
+            rt.infiniteStamina = cfgValue(text, "infinitestamina", "0") === "1";
+            rt.preventFallDmg = cfgValue(text, "preventfalldmg", "0") === "1";
+            rt.radarActive = cfgValue(text, "radar", "0") === "1";
+            rt.scanOffsets = cfgValue(text, "scan_offsets", "0") === "1";
+
+            var blinkX = parseFloat(cfgValue(text, "blink_x", "0"));
+            var blinkY = parseFloat(cfgValue(text, "blink_y", "0"));
+            var blinkZ = parseFloat(cfgValue(text, "blink_z", "0"));
+            if (blinkX !== 0 || blinkY !== 0 || blinkZ !== 0) {
+                rt.blinkTarget = { x: blinkX, y: blinkY, z: blinkZ };
+            } else { rt.blinkTarget = null; }
+
+            var autoJack = cfgValue(text, "autojack", "0") === "1";
+            if (autoJack && rt.autoJackTarget === null) {
+                var ent = selectedEntity();
+                if (ent && !ent.vehicle) rt.autoJackTarget = findNearestVehicle(ent);
+            } else if (!autoJack) { rt.autoJackTarget = null; }
+
+            rt.zUp = cfgValue(text, "z_up", "0") === "1";
+            rt.zDown = cfgValue(text, "z_down", "0") === "1";
+
             if (oldFly && !rt.fly) rt.landingUntil = Date.now() + 30000;
-            if (!rt.fly) {
-                rt.flightKey = null;
-                rt.flightOrigin = null;
-                rt.flightLimitLogged = false;
-            }
+            if (!rt.fly) { rt.flightKey = null; rt.flightOrigin = null; rt.flightLimitLogged = false; }
             var seq = parseInt(cfgValue(text, "action_seq", "0"), 10);
             if (!isFinite(seq)) seq = 0;
             if (rt.actionSeq === null) rt.actionSeq = seq;
@@ -114,16 +131,12 @@
     }
 
     function rightHeld() {
-        for (var i = 0; i < 3; i++) {
-            if (rt.active[i] && rt.coords[i].x >= 650 && rt.coords[i].y >= 300) return true;
-        }
+        for (var i = 0; i < 3; i++) { if (rt.active[i] && rt.coords[i].x >= 650 && rt.coords[i].y >= 300) return true; }
         return false;
     }
 
     function leftHeld() {
-        for (var i = 0; i < 3; i++) {
-            if (rt.active[i] && rt.coords[i].x < 650 && rt.coords[i].y >= 300) return true;
-        }
+        for (var i = 0; i < 3; i++) { if (rt.active[i] && rt.coords[i].x < 650 && rt.coords[i].y >= 300) return true; }
         return false;
     }
 
@@ -180,8 +193,6 @@
 
     function cameraDirection() {
         try {
-            // Scene.camera is initialized through *(base + 0x19d9c58), then Scene + 0x8.
-            // rw::Camera keeps its Frame in Object.parent (+0x8); Frame.matrix.at is +0x50.
             var scene = base.target.base.add(0x19d9c58).readPointer();
             if (scene.isNull()) return null;
             var camera = scene.add(0x8).readPointer();
@@ -216,29 +227,8 @@
     }
 
     function flightScale(entity) {
-        if (rt.flightKey !== entity.key || rt.flightOrigin === null) {
-            rt.flightKey = entity.key;
-            rt.flightOrigin = {
-                x: entity.ptr.add(0x38).readFloat(),
-                y: entity.ptr.add(0x3c).readFloat(),
-                z: entity.ptr.add(0x40).readFloat()
-            };
-            rt.flightLimitLogged = false;
-            return 1.0;
-        }
-        var x = entity.ptr.add(0x38).readFloat();
-        var y = entity.ptr.add(0x3c).readFloat();
-        var z = entity.ptr.add(0x40).readFloat();
-        var dx = x - rt.flightOrigin.x;
-        var dy = y - rt.flightOrigin.y;
-        var dz = z - rt.flightOrigin.z;
-        var distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        if (distance <= 180.0) return 1.0;
-        if (!rt.flightLimitLogged) {
-            rt.flightLimitLogged = true;
-            log("flight soft limit distance=" + distance.toFixed(1));
-        }
-        return Math.max(0.0, (260.0 - distance) / 80.0);
+        // REMOVED DISTANCE LIMIT FOR INFINITE FLIGHT
+        return 1.0; 
     }
 
     function flyEntity(entity) {
@@ -249,7 +239,10 @@
         var vz = ptrValue.add(0x170).readFloat();
         if (!isFinite(vx) || !isFinite(vy) || !isFinite(vz)) return true;
         var input = entity.vehicle ? rightHeld() : leftHeld();
-        if (!input) {
+        
+        if (rt.zUp) vz = 0.5;
+        else if (rt.zDown) vz = -0.5;
+        else if (!input) {
             if (Math.abs(vx) > 0.002) ptrValue.add(0x168).writeFloat(0.0);
             if (Math.abs(vy) > 0.002) ptrValue.add(0x16c).writeFloat(0.0);
             if (Math.abs(vz) > 0.002) ptrValue.add(0x170).writeFloat(0.0);
@@ -265,7 +258,13 @@
         var speed = flightSpeed(entity.vehicle) * flightScale(entity);
         ptrValue.add(0x168).writeFloat(direction.x * speed);
         ptrValue.add(0x16c).writeFloat(direction.y * speed);
-        ptrValue.add(0x170).writeFloat(direction.z * speed);
+        
+        if (!rt.zUp && !rt.zDown) {
+            ptrValue.add(0x170).writeFloat(direction.z * speed);
+        } else {
+            ptrValue.add(0x170).writeFloat(vz);
+        }
+        
         if (entity.vehicle) rt.writesVehicle++;
         else rt.writesPlayer++;
         rt.writesVertical++;
@@ -298,13 +297,139 @@
         }
     }
 
+    function scanEntities() {
+        if (base.target === null) return [];
+        var entities = [];
+        try {
+            var holder = base.target.base.add(0x19d9920).readPointer();
+            if (holder.isNull()) return [];
+            for (var i = 0; i < 100; i++) {
+                var wrapper = base.target.base.add(0x2b2f120 + i * 0xf8).readPointer();
+                if (wrapper.isNull()) continue;
+                var x = wrapper.add(0x38).readFloat();
+                var y = wrapper.add(0x3c).readFloat();
+                var z = wrapper.add(0x40).readFloat();
+                var isVehicle = wrapper.add(0x508).readU8() !== 0 && !wrapper.add(0x500).readPointer().isNull();
+                if (isFinite(x) && isFinite(y) && isFinite(z)) {
+                    entities.push({ ptr: wrapper, x: x, y: y, z: z, vehicle: isVehicle });
+                }
+            }
+            return entities;
+        } catch(_) { return []; }
+    }
+
+    function findNearestVehicle(myEntity) {
+        var all = scanEntities();
+        var nearest = null;
+        var minDist = 9999;
+        for (var i = 0; i < all.length; i++) {
+            if (!all[i].vehicle) continue;
+            var dx = all[i].x - myEntity.x;
+            var dy = all[i].y - myEntity.y;
+            var dz = all[i].z - myEntity.z;
+            var dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+            if (dist < minDist && dist > 2.0) {
+                minDist = dist;
+                nearest = all[i];
+            }
+        }
+        return nearest;
+    }
+
+    function updateRadar() {
+        if (!rt.radarActive) return;
+        var all = scanEntities();
+        try {
+            var f = new File(statusPath, "w");
+            f.write("RADAR: " + all.length + " entities\n");
+            var count = 0;
+            for (var i = 0; i < all.length && count < 5; i++) {
+                if (!all[i].vehicle) {
+                    f.write("P" + count + ": " + all[i].x.toFixed(0) + "," + all[i].y.toFixed(0) + "\n");
+                    count++;
+                }
+            }
+            f.flush();
+            f.close();
+        } catch(_) {}
+    }
+
+    function autoOffsetDiscovery(entity) {
+        if (!rt.scanOffsets) return;
+        rt.scanOffsets = false; // Run once
+        log("STARTING OFFSET SCAN for 100.0");
+        try {
+            for (var offset = 0; offset < 0x300; offset += 4) {
+                if (entity.ptr.add(offset).readFloat() === 100.0) {
+                    log("FOUND 100.0 at OFFSET: 0x" + offset.toString(16));
+                }
+            }
+        } catch(_) {}
+    }
+
+    function freezeResources(entity) {
+        if (!entity) return;
+        if (!entity.vehicle) {
+            if (rt.godMode) { try { entity.ptr.add(OFFSET_PLAYER_HEALTH).writeFloat(100.0); } catch(_){} }
+            if (rt.infiniteStamina) { try { entity.ptr.add(OFFSET_STAMINA).writeFloat(100.0); } catch(_){} }
+        } else {
+            if (rt.godMode) { try { entity.ptr.add(OFFSET_VEHICLE_HEALTH).writeFloat(100.0); } catch(_){} }
+            if (rt.infiniteFuel) { try { entity.ptr.add(OFFSET_VEHICLE_FUEL).writeFloat(100.0); } catch(_){} }
+        }
+    }
+
+    function preventFallDamage(entity) {
+        if (!rt.preventFallDmg || entity.vehicle) return;
+        var vz = entity.ptr.add(0x170).readFloat();
+        if (isFinite(vz) && vz < -1.5) {
+            entity.ptr.add(0x170).writeFloat(0.0);
+            rt.writesVertical++;
+        }
+    }
+
+    function executeBlink(entity) {
+        if (!rt.blinkTarget) return;
+        var dx = rt.blinkTarget.x - entity.x;
+        var dy = rt.blinkTarget.y - entity.y;
+        var dz = rt.blinkTarget.z - entity.z;
+        var dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        if (dist < 0.5) { rt.blinkTarget = null; return; }
+        var step = 2.5;
+        entity.ptr.add(0x38).writeFloat(entity.x + (dx/dist)*step);
+        entity.ptr.add(0x3c).writeFloat(entity.y + (dy/dist)*step);
+        entity.ptr.add(0x40).writeFloat(entity.z + (dz/dist)*step);
+    }
+
+    function executeAutoJack(entity) {
+        if (!rt.autoJackTarget) return;
+        var dx = rt.autoJackTarget.x - entity.x;
+        var dy = rt.autoJackTarget.y - entity.y;
+        var dz = rt.autoJackTarget.z - entity.z;
+        var dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        if (dist < 2.0) { rt.autoJackTarget = null; return; }
+        var step = 5.0;
+        entity.ptr.add(0x38).writeFloat(entity.x + (dx/dist)*step);
+        entity.ptr.add(0x3c).writeFloat(entity.y + (dy/dist)*step);
+        entity.ptr.add(0x40).writeFloat(entity.z + (dz/dist)*step);
+    }
+
     function tick() {
         var active = rt.speed > 1.0 || rt.jump > 1.0 || rt.safeFall || rt.endlessRun ||
-            rt.fly || rt.waterWalk || rt.waterDrive || rt.vehicleCruise || Date.now() < rt.brakeUntil;
+            rt.fly || rt.waterWalk || rt.waterDrive || rt.vehicleCruise || Date.now() < rt.brakeUntil ||
+            rt.godMode || rt.infiniteFuel || rt.infiniteStamina || rt.preventFallDmg || 
+            rt.blinkTarget !== null || rt.autoJackTarget !== null;
+            
         if (!active) return;
         var entity = selectedEntity();
         if (entity === null) return;
+        
         try {
+            autoOffsetDiscovery(entity);
+            freezeResources(entity);
+            preventFallDamage(entity);
+            executeBlink(entity);
+            executeAutoJack(entity);
+
             if (entity.vehicle) {
                 if (flyEntity(entity)) return;
                 if (Date.now() < rt.brakeUntil) {
@@ -342,6 +467,7 @@
     setInterval(readConfig, 500);
     setInterval(attachTouch, 500);
     setInterval(tick, 20);
+    setInterval(updateRadar, 1000);
     setInterval(function () {
         if (rt.writesVehicle || rt.writesPlayer || rt.writesVertical || rt.errors) {
             log("writes10s vehicle=" + rt.writesVehicle + " player=" + rt.writesPlayer +
@@ -351,5 +477,5 @@
             rt.writesVertical = 0;
         }
     }, 10000);
-    log("loader active; vehicle caps=0.53/0.58/0.63 player caps=0.55/0.72/0.92");
+    log("loader active; v8.1 full integration. vehicle caps=0.53/0.58/0.63 player caps=0.55/0.72/0.92");
 })();
