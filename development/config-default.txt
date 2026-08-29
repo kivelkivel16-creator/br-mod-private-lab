@@ -1,0 +1,6 @@
+debug=0
+speed=1.0
+steer=1
+antiafk=0
+draw2d=1
+bloor=0
