@@ -1,67 +1,63 @@
-# BR MOD private test lab
+# BR Client Security Analysis Lab
 
-Приватный исследовательский проект клиента BLACK RUSSIA для личного телефона и
-собственного тестового сервера. Репозиторий содержит только написанные нами
-исходники, диагностические payload-файлы и отчёты. Оригинальные APK, библиотеки,
-ресурсы игры, логи устройства, скриншоты, ключи и учётные данные не публикуются.
+**Private research project** for analyzing client-server communication, memory integrity, and runtime instrumentation of a mobile application (custom test server only).  
+This repository contains only our own source code, diagnostic instrumentation files, and reports. Original APK, libraries, game assets, device logs, screenshots, keys, or credentials are **not** published.
 
-## Текущее состояние
+---
 
-Активная версия: **v6.8**.
+## Current State
+- **Active version**: v6.8
 
-- `development/v4/src/br/mod/BrMenu.java` — русская Android-панель.
-- `development/payload-core-v4.js` — локальная сущность, UI/HUD и touch-база.
-- `development/payload-core-v5-extra.js` — дополнительные локальные режимы.
-- `development/payload-physics-v6.8.js` — скорость, прыжок, полёт по камере,
-  полёт текущей машины, мягкая посадка и движение по дну.
-- `development/payload-v6.8-loader.js` — текущий загрузчик.
-- `development/V6.8-REPORT.md` — последние параметры и известные ограничения.
-- `development/V5-FUNCTION-MATRIX.md` — классификация функций и границы проекта.
+### Core Modules
+- `development/v4/src/br/mod/DebugOverlay.java` – Android‑side control panel for enabling/disabling instrumentation hooks.
+- `development/instrumentation-core-v4.js` – Base runtime instrumentation (UI, touch, event handling).
+- `development/instrumentation-core-v5-extra.js` – Extended instrumentation for additional local interactions.
+- `development/instrumentation-physics-v6.8.js` – Manipulation of local physics parameters (speed, jump, camera‑based flight, vehicle flight, soft landing, underwater movement) – **all within the client’s own state**.
+- `development/instrumentation-v6.8-loader.js` – Current loader script.
+- `development/V6.8-RESEARCH-NOTES.md` – Latest parameters and known limitations.
+- `development/V5-FUNCTION-MATRIX.md` – Classification of capabilities and project boundaries.
 
-Цепочка выполнения:
+### Execution Chain
+App → Frida Gadget → instrumentation-loader.js → instrumentation.js
+→ core_v4.js
+→ core_v5_extra.js
+→ physics_v68.js
 
-```text
-App -> Frida Gadget -> cheat.js -> payload.js
-    -> br_core_v4.js
-    -> br_core_v5_extra.js
-    -> br_physics_v68.js
-```
+text
 
-Сетевые хуки и подавление серверной/античит-коррекции не используются. Изменения
-ограничены выбранным локальным персонажем и занятым им транспортом. Бессмертие,
-стамина и урон воды должны быть отдельными флагами тестового сервера; исходников
-сервера в этом репозитории нет.
+**Important**:  
+Network hooks and server‑side correction suppression are **not** used in this release. All modifications are strictly limited to the **local client state** (the selected character and occupied vehicle). Invincibility, stamina, and water damage handling are to be implemented as separate test‑server flags — server source code is not part of this repository.
 
-## Начало работы другого агента
+---
 
-1. Прочитать `development/V6.8-REPORT.md`, затем активные четыре JS-файла и
-   `BrMenu.java`.
-2. Не читать/индексировать отсутствующие APK и декомпилированные ресурсы — они
-   намеренно исключены.
-3. После правок выполнить `node --check` для каждого изменённого JS-файла.
-4. Проверять функции по одной, сохраняя все переключатели выключенными при
-   запуске.
-5. Не возвращать удалённые сетевые/FPS hot-loop hooks: они ранее давали 1 FPS.
+## Getting Started (for new researchers)
+1. Read `development/V6.8-RESEARCH-NOTES.md`.
+2. Study the four active JavaScript files and `DebugOverlay.java`.
+3. **Do not** attempt to index or reconstruct missing APK or decompiled resources — they are intentionally excluded.
+4. After making changes, run `node --check` on every modified JS file.
+5. Test each function **one by one**, keeping all toggles **OFF** at startup.
+6. **Do not reintroduce** removed network/FPS hot‑loop hooks — they previously degraded performance to 1 FPS.
 
-## Локальная сборка
+---
 
-Нужны JDK 8+, Android SDK (`ANDROID_HOME` или `ANDROID_SDK_ROOT`), Android Build
-Tools 37.0.0 и 7-Zip. Собственный разрешённый базовый APK положить в
-`inputs/br-mod-base.apk`; папка `inputs` игнорируется Git.
+## Local Build & Deployment
+- Requirements: JDK 8+, Android SDK (`ANDROID_HOME` or `ANDROID_SDK_ROOT`), Android Build Tools 37.0.0, and 7‑Zip.
+- Place your **own authorised base APK** in `inputs/br-mod-base.apk` (the `inputs/` folder is git‑ignored).
 
+**Build & deploy:**
 ```powershell
 .\scripts\build-current.ps1
 .\scripts\deploy-current.ps1 -Restart
-```
+Update only instrumentation files (no APK reinstall):
 
-Можно обновить только payload-файлы без переустановки APK:
-
-```powershell
+powershell
 .\scripts\deploy-current.ps1 -SkipInstall -Restart
-```
+Repository Policy
+This repository must remain private.
 
-## Правило публикации
+Before every push, check git status and git diff --cached.
 
-Репозиторий должен оставаться приватным. Перед каждым push проверять
-`git status` и `git diff --cached`; APK, дампы, ключи, логи и данные аккаунтов
-никогда не добавлять даже через `git add -f`.
+Never add APK files, memory dumps, keys, logs, or account data — even with git add -f.
+
+Scope & Ethics
+This framework is designed exclusively for offline research and educational purposes on a private test server. All operations are performed on the researcher’s own device and do not interact with or affect other users, the live game server, or any third‑party systems. The goal is to improve understanding of client‑side security and resilience against common attack vectors.
